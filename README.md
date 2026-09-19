@@ -39,6 +39,38 @@ VeReMi NextGen provides:
 - **Parameter Optimization** for systematically obtaining the best thresholds  
   
 
+## CPM-Assisted MBD Extension
+
+This repository extends VeReMi NextGen with CPM-assisted misbehavior detection and the supporting simulation and evaluation pipeline.
+
+### 1. Simulation changes
+
+The final Eclipse MOSAIC configuration is located at [`Generator/simulation/mosaic-cpm-final`](./Generator/simulation/mosaic-cpm-final).
+
+It retains the VeReMi NextGen MOSAIC structure and adds:
+
+- **CPM communication:** vehicles build and broadcast at most one CPM per second as a MOSAIC `GenericV2xMessage`. CAM and CPM records use the same sender-state snapshot and are written to separate `cam`, `cpm`, and `ego` output folders.
+- **Perception and occlusion:** CPM perception covers 360 degrees with an 80 m range. The scenario enables MOSAIC's wall index, and the application applies both `WallOcclusion` and `BoundingBoxOcclusion`, so buildings and intervening vehicles can hide perceived objects.
+- **Communication-zone entry:** `just_entered_communication_zone` is `1` for the first two simulated seconds after a vehicle enters the configured area and `0` otherwise. It is included for CAM and CPM senders and receivers.
+- **Windowed collection:** simulation time and geographic bounds are configurable. Radios and CPM perception are enabled only at the first in-window, in-area CAM transmission, while sampling, vehicle behavior, and pseudonym scheduling still begin at vehicle startup.
+- **Pseudonyms and output performance:** pseudonym changes use a configurable simulation-time interval (100 s in the final scenario), with per-vehicle debug counts. Message records are appended as newline-delimited JSON during simulation to avoid repeatedly rewriting full files.
+
+Key custom and modified files:
+
+| File | Purpose |
+| --- | --- |
+| `applications/CamApp/src/main/java/entities/CpmPayload.java` | New serializable UTF-8 JSON payload used to carry CPMs in `GenericV2xMessage`. |
+| `applications/CamApp/src/main/java/etsi/VehicleCamSendingApp.java` | CPM creation, transmission and reception; perception and occlusion; radio gating; `justEntered`; pseudonyms; and output routing. |
+| `applications/CamApp/src/main/java/entities/VehicleAdditionalInformation.java` | Adds `justEnteredCommunicationZone` to CAM metadata. |
+| `applications/CamApp/src/main/java/entities/ConfigSettings.java` | Defines collection time/area, pseudonym interval, output paths, and CAM settings. |
+| `applications/CamApp/src/main/java/util/JSONParser.java` | Appends streamed message records and writes pseudonym debug counts. |
+| `applications/CamApp/pom.xml` | Builds CamApp for Java 17 against Eclipse MOSAIC 25.0. |
+| `scenarios/urban/application/EtsiApplication.json` | Selects the final collection window, area, pseudonym interval, and output locations. |
+| `scenarios/urban/application/application_config.json` | Enables the 5 m vehicle grid, building-wall index, and bounded perception area. |
+| `scenarios/urban/scenario_config.json` | Defines the 600 s InTAS run and active MOSAIC federates. |
+| `scenarios/urban/application/CamApp-0.0.1.jar` | Packaged CamApp used by the scenario. |
+
+
 
 ## Repository Structure
 
