@@ -1,0 +1,13 @@
+# Generated datasets and detector outputs
+/seeded-simulations/**
+!/seeded-simulations/.gitkeep
+/attacks/**
+!/attacks/.gitkeep
+
+# Runtime state and logs
+/.runtime/
+/.work/
+/run-logs/
+/*.log
+/*.pid
+/.pipeline.lock

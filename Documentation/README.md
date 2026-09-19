@@ -3,6 +3,7 @@
 Welcome to the documentation of the **VeReMi NextGen** project – A comprehensive dataset and dataset generator for evaluating **Misbehavior Detection** in Vehicle-to-Everything (V2X) communication.
 
 ## Table of Contents
+- [CPM-Assisted MBD](./CPM-Assisted-MBD) - Full CPM dataset, attack, detection, and PRV results pipeline
 - [Getting Started](./Getting%20Started) - Guide to run the simulation on you own machine
 - [Architecture](./Architecture) – System design & Overview
 - [Processes](./Processes) – Processes that occur during simulation

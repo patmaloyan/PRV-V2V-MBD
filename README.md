@@ -87,7 +87,23 @@ python Generator/MBD_systems/PRV-results/generate.py <experiment-root>
 
 Results are written to `Generator/MBD_systems/PRV-results/created`. The experiment root must contain `experiment.json` and its corresponding `attacks/` directory; the final layout is defined in Section 3.
 
+### 3. Full pipeline and PRV results
 
+[`Simulation-CPM-final`](./Simulation-CPM-final) contains the final experiment manifest and reproducible pipeline. The generated data are excluded from Git because of their size. From the repository root, run:
+
+```bash
+.venv/bin/pip install -r Simulation-CPM-final/requirements.txt
+.venv/bin/python Simulation-CPM-final/run.py pipeline
+```
+
+The command runs the complete workflow:
+
+1. Eclipse MOSAIC creates the four clean CAM/CPM simulation datasets.
+2. `attackGenerator.py` creates `constantPositionOffset` and `randomPositionOffset` attack sets with seeds 1–3.
+3. `Generator/MBD_systems/main.py` runs CAM-only (type 2) and PRV (type 6) detection on every attack set.
+4. `PRV-results/generate.py` reads those detector results and creates the cases graph, performance distribution, and attack-performance table.
+
+Completed outputs are validated and skipped when the pipeline is resumed. The generated dataset is not hosted because of its size. See [`Simulation-CPM-final/README.md`](./Simulation-CPM-final/README.md) for setup, individual stage commands, output layout, and dataset inquiries.
 
 ## Repository Structure
 

@@ -9,7 +9,7 @@ import numpy as np
 import shutil
 from pathlib import Path
 
-ATTACK_RATIO = 0.2
+DEFAULT_ATTACK_RATIO = 0.2
 FIXED_POSITION_OFFSET_M = 50.0
 
 # Sender fields cached per transmitted message so repeated receptions share one attacked sender state.
@@ -29,11 +29,17 @@ SENDER_STATE_FIELDS = [
     'sender_driversProfile',
 ]
 
-parser = argparse.ArgumentParser(description="Sort a JSON array by sendTime.")
+parser = argparse.ArgumentParser(
+    description="Generate a reproducible attacked CAM/CPM dataset."
+)
 parser.add_argument("input_folder", help="Path to the input files")
 parser.add_argument("misbehavior", help="Specify the misbehavior")
 parser.add_argument("sumoConf", help="Path to the scenario .sumocfg file")
 parser.add_argument("--seed", type=int, help="Seed Python and NumPy randomness for a reproducible attack dataset")
+parser.add_argument(
+    "--attack-ratio", type=float, default=DEFAULT_ATTACK_RATIO,
+    help="Fraction of vehicle identities selected as attackers (default: 0.2)",
+)
 parser.add_argument("--output-dir", type=Path, help="Write the attacked dataset to this directory")
 args = parser.parse_args()
 
@@ -1018,6 +1024,8 @@ def set_up_misbehavior_config():
 
 # Main execution
 if __name__ == "__main__":
+    if not 0 < args.attack_ratio < 1:
+        parser.error("--attack-ratio must be greater than 0 and less than 1")
     if args.seed is not None:
         random.seed(args.seed)
         np.random.seed(args.seed)
@@ -1026,21 +1034,21 @@ if __name__ == "__main__":
     misbehavior_config = dict()
     messages_lookup = {}
     sender_lookup = {}
-    misbehavior_config['ratio'] = ATTACK_RATIO
+    misbehavior_config['ratio'] = args.attack_ratio
     output_dir = args.output_dir if args.output_dir is not None else input_folder.parent / f"{input_folder.name}_{args.misbehavior}"
     # CPM-addition: support datasets split into cam/ and cpm/ folders.
     cam_input_dir = input_folder / 'cam' if (input_folder / 'cam').is_dir() else input_folder
     cpm_input_dir = input_folder / 'cpm' if (input_folder / 'cpm').is_dir() else None
     ego_input_dir = input_folder / 'ego' if (input_folder / 'ego').is_dir() else None
     cam_output_dir = output_dir / 'cam' if cpm_input_dir is not None else output_dir
-    output_dir.mkdir(exist_ok=True)
-    cam_output_dir.mkdir(exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    cam_output_dir.mkdir(parents=True, exist_ok=True)
     if cpm_input_dir is not None:
         (output_dir / 'cpm').mkdir(exist_ok=True)
     if ego_input_dir is not None:
         (output_dir / 'ego').mkdir(exist_ok=True)
 
-    for json_file in cam_input_dir.glob('*.json'):
+    for json_file in sorted(cam_input_dir.glob('*.json')):
         with open(json_file, 'r') as f:
             data = json.load(f)
             df_temp = pd.json_normalize(data, sep='_')
@@ -1149,27 +1157,27 @@ if __name__ == "__main__":
     if needs_sumo:
         start_sumo()
 
-    files_to_process = [f for f in cam_input_dir.glob('*.json')
+    files_to_process = [f for f in sorted(cam_input_dir.glob('*.json'))
                         if not f.stem.endswith(tuple(misbehaviorOptions))]
 
     total_files = len(files_to_process)
     count = 0
 
-    for json_file in cam_input_dir.glob('*.json'):
+    for json_file in sorted(cam_input_dir.glob('*.json')):
         if not json_file.stem.endswith(tuple(misbehaviorOptions)):
             process_single_file(json_file)
             count += 1
             print(f"Processing misbehavior for file {count}/{total_files}: {json_file.name}")
 
     if cpm_input_dir is not None:
-        cpm_files_to_process = [f for f in cpm_input_dir.glob('*.json')
+        cpm_files_to_process = [f for f in sorted(cpm_input_dir.glob('*.json'))
                                 if not f.stem.endswith(tuple(misbehaviorOptions))]
         for index, json_file in enumerate(cpm_files_to_process, start=1):
             process_cpm_file(json_file)
             print(f"Processing CPM misbehavior for file {index}/{len(cpm_files_to_process)}: {json_file.name}")
 
     if ego_input_dir is not None:
-        ego_files_to_process = [f for f in ego_input_dir.glob('*.json')
+        ego_files_to_process = [f for f in sorted(ego_input_dir.glob('*.json'))
                                 if not f.stem.endswith(tuple(misbehaviorOptions))]
         copied_count = 0
         for index, json_file in enumerate(ego_files_to_process, start=1):
