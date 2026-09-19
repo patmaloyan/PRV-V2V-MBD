@@ -464,3 +464,9 @@ pyrightconfig.json
 
 Simulation-Test
 Generator/docker
+
+# Generated MBD evaluation artifacts
+Generator/MBD_systems/visualization/
+Generator/MBD_systems/PRV-results/created/**
+!Generator/MBD_systems/PRV-results/created/
+!Generator/MBD_systems/PRV-results/created/.gitkeep

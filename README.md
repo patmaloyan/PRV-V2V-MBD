@@ -70,6 +70,23 @@ Key custom and modified files:
 | `scenarios/urban/scenario_config.json` | Defines the 600 s InTAS run and active MOSAIC federates. |
 | `scenarios/urban/application/CamApp-0.0.1.jar` | Packaged CamApp used by the scenario. |
 
+### 2. MBD system
+
+[`Generator/MBD_systems`](./Generator/MBD_systems) retains the VeReMi processing and CaTCH modules and adds the Kalman and CPM-assisted detectors:
+
+- `kalman_filter.py` implements the motion and measurement model.
+- `kalman_detector.py` implements CAM-only and CAM+CPM tracking and association.
+- `cpm_detector.py` implements two-edge reciprocity and the final PRV trust detector.
+- `main.py` runs detector types 2 (CAM-only), 3 (CAM+CPM), 4 (two-edge reciprocity), and 6 (PRV).
+
+The [`PRV-results`](./Generator/MBD_systems/PRV-results) folder generates the PRV reciprocity-cases graph, CAM-only versus PRV performance distribution, and performance table across attacks and traffic scenarios. Run all three with:
+
+```bash
+python Generator/MBD_systems/PRV-results/generate.py <experiment-root>
+```
+
+Results are written to `Generator/MBD_systems/PRV-results/created`. The experiment root must contain `experiment.json` and its corresponding `attacks/` directory; the final layout is defined in Section 3.
+
 
 
 ## Repository Structure

@@ -1,3 +1,5 @@
+"""Kalman motion and measurement model for vehicle-state tracking."""
+
 from dataclasses import dataclass
 import math
 
@@ -15,7 +17,7 @@ INITIAL_STATE_COVARIANCE = np.diag([
 ])
 # Once a track exists, the persistent bias is part of its coordinate offset.
 # Update noise therefore models the changing error between reports. These
-# variances come from benign noCheat2 successive-error measurements.
+# Variances come from successive-error measurements in benign calibration runs.
 SENSOR_MEASUREMENT_COVARIANCE = np.diag([
     0.01,
     0.01,
@@ -30,7 +32,7 @@ CPM_ASSOCIATION_COVARIANCE = np.diag([
     0.25,
     0.25,
 ])
-# Continuous white-acceleration noise intensity, calibrated on benign noCheat2
+# Continuous white-acceleration noise intensity, calibrated on benign-run
 # innovations so the 99% NIS threshold rejects about 1% of established tracks.
 PROCESS_NOISE_INTENSITY = 3.6
 

@@ -3,6 +3,7 @@
 import json
 import math
 from pathlib import Path
+import time
 
 import numpy as np
 import pandas as pd
@@ -35,10 +36,46 @@ MAX_ASSOCIATION_PREDICTION_GAP_NS = int(
     MAX_ASSOCIATION_PREDICTION_GAP_S * 1_000_000_000
 )
 RANGE_MARGIN_M = 25.0
+WIRELESS_RANGE_M = 300.0
 EGO_LOOKBACK_NS = 2_000_000_000
 CPM_SENSOR_RANGE_M = 80.0
-PSEUDONYM_INTERVAL_S = 50
+PSEUDONYM_INTERVAL_S = 100
 TRACK_EXPIRY_NS = PSEUDONYM_INTERVAL_S * 1_000_000_000
+
+
+def _input_bytes(*paths):
+    return sum(
+        path.stat().st_size
+        for path in paths
+        if path is not None and path.is_file()
+    )
+
+
+def _format_duration(seconds):
+    seconds = max(0, int(seconds))
+    hours, remainder = divmod(seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+
+def _report_receiver_progress(
+    detector_label, receiver_index, receiver_count,
+    processed_bytes, total_bytes, started_at,
+):
+    elapsed = time.monotonic() - started_at
+    fraction = (
+        processed_bytes / total_bytes
+        if total_bytes > 0
+        else receiver_index / receiver_count
+    )
+    eta = elapsed * (1.0 - fraction) / fraction if fraction > 0 else 0
+    print(
+        f"[progress] {detector_label}: receivers "
+        f"{receiver_index}/{receiver_count}; input {fraction * 100:.1f}%; "
+        f"elapsed {_format_duration(elapsed)}; "
+        f"ETA {_format_duration(eta)}",
+        flush=True,
+    )
 
 
 def evaluation_receiver_ids(input_folder: Path, receiver_ids):
@@ -56,7 +93,7 @@ class CamOnlyKalmanDetector:
     def __init__(self, catch_params=None, catch_enabled=True):
         self.catch_params = catch_params or Parameters()
         self.catch_enabled = catch_enabled
-        self.wireless_range_m = self.catch_params.MAX_PLAUSIBLE_RANGE
+        self.wireless_range_m = WIRELESS_RANGE_M
         self.tracks = []
         self.tracks_by_station_alias = {}
         self.initial_covariance = INITIAL_STATE_COVARIANCE.copy()
@@ -226,16 +263,24 @@ class CamOnlyKalmanDetector:
     def new_vehicle_check(
         self, cam: dict, ego_snapshots: list[dict], commit: bool = True,
     ):
-        # A new ID is accepted if it just entered, appears near range edge, or is seen by the receiver.
+        # A vehicle entering the simulation, or first seen by a receiver that
+        # just entered, may already be inside the radio range rather than near
+        # its boundary.
         if sender_just_entered(cam) == 1:
             if commit:
                 self.add_track(cam)
-            return decision(True, "new_vehicle_sender_zone_entry_accept", None, None, None)
+            return decision(
+                True, "new_vehicle_sender_zone_entry_accept",
+                None, None, None,
+            )
 
         if receiver_just_entered(cam) == 1:
             if commit:
                 self.add_track(cam)
-            return decision(True, "new_vehicle_receiver_zone_entry_accept", None, None, None)
+            return decision(
+                True, "new_vehicle_receiver_zone_entry_accept",
+                None, None, None,
+            )
 
         if self.within_wireless_margin(cam):
             if commit:
@@ -397,7 +442,10 @@ class CamCpmKalmanDetector(CamOnlyKalmanDetector):
 
         return pd.DataFrame(rows)
 
-    def process_perceived_objects(self, cpm: dict):
+    def process_perceived_objects(
+        self, cpm: dict, *, refresh_matched_tracks=True,
+        initialize_unmatched_tracks=True,
+    ):
         counts = empty_object_counts()
         objects = cpm.get("perceivedObjects", [])
         if not isinstance(objects, list):
@@ -425,7 +473,8 @@ class CamCpmKalmanDetector(CamOnlyKalmanDetector):
                 edge_results = []
                 deviations = []
                 for matched_track, deviation in matched_tracks:
-                    matched_track.last_accepted_time = int(cpm["rcvTime"])
+                    if refresh_matched_tracks:
+                        matched_track.last_accepted_time = int(cpm["rcvTime"])
                     deviations.append(deviation)
                     edge_results.append(self.on_perceived_object_match(
                         cpm, matched_track, deviation, perceived_object
@@ -454,7 +503,7 @@ class CamCpmKalmanDetector(CamOnlyKalmanDetector):
                 counts["cpm_object_events"].append(event)
                 continue
 
-            if self.add_anonymous_object_track(measurement):
+            if initialize_unmatched_tracks and self.add_anonymous_object_track(measurement):
                 counts["cpm_objects_initialized"] += 1
                 action = "initialized"
             else:
@@ -500,11 +549,26 @@ def process_kalman_folder(
     receiver_results = []
     cam_paths = {path.stem: path for path in cam_dir.glob("*.json")}
     receiver_ids = evaluation_receiver_ids(input_folder, sorted(cam_paths))
-    for receiver_id in receiver_ids:
+    receiver_sizes = {
+        receiver_id: _input_bytes(
+            cam_paths[receiver_id],
+            ego_dir / cam_paths[receiver_id].name if ego_dir.is_dir() else None,
+        )
+        for receiver_id in receiver_ids
+    }
+    total_bytes = sum(receiver_sizes.values())
+    processed_bytes = 0
+    started_at = time.monotonic()
+    for receiver_index, receiver_id in enumerate(receiver_ids, 1):
         cam_path = cam_paths[receiver_id]
         ego_path = ego_dir / cam_path.name if ego_dir.is_dir() else None
         detector = CamOnlyKalmanDetector(catch_params, catch_enabled)
         receiver_results.append(detector.process_receiver(cam_path, ego_path))
+        processed_bytes += receiver_sizes[receiver_id]
+        _report_receiver_progress(
+            "CAM Only", receiver_index, len(receiver_ids),
+            processed_bytes, total_bytes, started_at,
+        )
 
     if not receiver_results:
         raise ValueError(f"No CAM JSON files found in {cam_dir}")
@@ -512,7 +576,7 @@ def process_kalman_folder(
     results = pd.concat(receiver_results, ignore_index=True)
     metrics = calculate_metrics(results)
     add_catch_metrics(metrics, results)
-    metrics["wireless_range_m"] = catch_params.MAX_PLAUSIBLE_RANGE
+    metrics["wireless_range_m"] = WIRELESS_RANGE_M
     metrics["range_margin_m"] = RANGE_MARGIN_M
     metrics["nis_threshold"] = NIS_THRESHOLD
     metrics["known_alias_nis_threshold"] = KNOWN_ALIAS_NIS_THRESHOLD
@@ -549,14 +613,30 @@ def process_cam_cpm_kalman_folder(
     if not receiver_ids:
         raise ValueError(f"No non-attacker receivers found in {input_folder}")
 
+    receiver_sizes = {
+        receiver_id: _input_bytes(
+            cam_paths.get(receiver_id), cpm_paths.get(receiver_id),
+            ego_dir / f"{receiver_id}.json" if ego_dir.is_dir() else None,
+        )
+        for receiver_id in receiver_ids
+    }
+    total_bytes = sum(receiver_sizes.values())
+    processed_bytes = 0
+    started_at = time.monotonic()
+    detector_label = getattr(detector_factory, "__name__", str(detector_factory))
     receiver_results = []
-    for receiver_id in receiver_ids:
+    for receiver_index, receiver_id in enumerate(receiver_ids, 1):
         ego_path = ego_dir / f"{receiver_id}.json" if ego_dir.is_dir() else None
         # Kalman state is local to a receiver and must never leak between vehicles.
         detector = detector_factory(catch_params, catch_enabled)
         receiver_results.append(detector.process_receiver(
             cam_paths.get(receiver_id), cpm_paths.get(receiver_id), ego_path
         ))
+        processed_bytes += receiver_sizes[receiver_id]
+        _report_receiver_progress(
+            detector_label, receiver_index, len(receiver_ids),
+            processed_bytes, total_bytes, started_at,
+        )
 
     results = pd.concat(receiver_results, ignore_index=True)
     # CPMs still influence the shared tracks, but detector accuracy is measured
@@ -564,7 +644,7 @@ def process_cam_cpm_kalman_folder(
     evaluated_results = results[results["message_type"] == "CAM"]
     metrics = calculate_metrics(evaluated_results)
     add_catch_metrics(metrics, evaluated_results)
-    metrics["wireless_range_m"] = catch_params.MAX_PLAUSIBLE_RANGE
+    metrics["wireless_range_m"] = WIRELESS_RANGE_M
     metrics["range_margin_m"] = RANGE_MARGIN_M
     metrics["cpm_sensor_range_m"] = CPM_SENSOR_RANGE_M
     metrics["nis_threshold"] = NIS_THRESHOLD

@@ -1,4 +1,4 @@
-"""CPM-aware Kalman detector variants used by ``main.py`` types 4, 5, 6, 8, and 20."""
+"""CPM reciprocity detectors used by ``main.py`` types 4 and 6."""
 
 from dataclasses import dataclass
 import math
@@ -28,12 +28,9 @@ EDGE_GRACE_NS = 2_000_000_000
 EDGE_TTL_NS = 6_000_000_000
 REQUIRED_UNRECIPROCATED_EDGES = 2
 INTERVAL_NS = 1_000_000_000
-RECIPROCITY_BOTH_DIRECTIONS_COEFFICIENT = 2.0
-RECIPROCITY_INBOUND_ONLY_COEFFICIENT = 1.0
+PRV_BOTH_DIRECTIONS_COEFFICIENT = 2.0
 PRV_OUTBOUND_ONLY_COEFFICIENT = -1.0
 TRUST_ALPHA = 1.0 / 3.0
-MIN_TRUST_UPDATES = 3
-MAX_PAIR_SCORE_MAGNITUDE = 2.0
 RECIPROCITY_NIS_THRESHOLD = 18.47
 
 
@@ -171,16 +168,16 @@ def edge_evidence(nis, distance):
     )
 
 
-def prv_pair_score(inbound, outbound):
-    """PRV evidence score for a subject vehicle and one counterpart."""
-    if inbound is not None and outbound is not None:
-        return RECIPROCITY_BOTH_DIRECTIONS_COEFFICIENT * math.sqrt(
-            inbound.weight * outbound.weight
+def prv_pair_score(b_to_a, a_to_b):
+    """Score assessed A against counterpart B as mutual/A→B/B→A/absent."""
+    if b_to_a is not None and a_to_b is not None:
+        return PRV_BOTH_DIRECTIONS_COEFFICIENT * math.sqrt(
+            b_to_a.weight * a_to_b.weight
         )
-    if inbound is not None:
-        return RECIPROCITY_INBOUND_ONLY_COEFFICIENT * inbound.weight
-    if outbound is not None:
-        return PRV_OUTBOUND_ONLY_COEFFICIENT * outbound.weight
+    if b_to_a is not None:
+        return 0.0
+    if a_to_b is not None:
+        return PRV_OUTBOUND_ONLY_COEFFICIENT * a_to_b.weight
     return 0.0
 
 
@@ -276,11 +273,12 @@ class _PrvDetectorBase(CamCpmKalmanDetector):
                         )
                         source_state = self.trust.get(self.current_source_track_id)
 
-                    externally_accepted = base_decision["accepted"] and (
-                        source_state is None or source_state.accepted
-                    )
                     source_decision = dict(base_decision)
-                    if externally_accepted:
+                    if base_decision["accepted"]:
+                        # PRV trust controls the external decision and whether
+                        # this source's CPM may influence other tracks. It must
+                        # not stop a CAM already accepted by the base Kalman
+                        # detector from maintaining that source's own track.
                         source_decision = self.process_cam(
                             message, ego_snapshots, commit=True
                         )
@@ -292,7 +290,9 @@ class _PrvDetectorBase(CamCpmKalmanDetector):
                                 source_track, create_trust=True
                             )
                             source_state = self.trust[self.current_source_track_id]
-                    elif base_decision["accepted"]:
+                    if base_decision["accepted"] and (
+                        source_state is not None and not source_state.accepted
+                    ):
                         source_decision.update(decision(
                             False, "prv_quarantine",
                             base_decision.get("pos_error"),
@@ -310,6 +310,14 @@ class _PrvDetectorBase(CamCpmKalmanDetector):
             if message_type == "CPM":
                 if source_decision["accepted"]:
                     object_counts = self.process_perceived_objects(
+                        cpm_object_message(message)
+                    )
+                elif source_state is not None and not source_state.accepted:
+                    # A quarantined source still needs its own outbound edges
+                    # to update its trust and permit recovery. Associate only
+                    # against existing tracks: do not refresh, update, or
+                    # initialize any track using an untrusted CPM.
+                    object_counts = self.process_quarantined_perceived_objects(
                         cpm_object_message(message)
                     )
                 else:
@@ -366,6 +374,13 @@ class _PrvDetectorBase(CamCpmKalmanDetector):
             self.last_closed_intervals = [self.close_current_bucket()]
         return pd.DataFrame(rows)
 
+    def process_quarantined_perceived_objects(self, cpm):
+        return super().process_perceived_objects(
+            cpm,
+            refresh_matched_tracks=False,
+            initialize_unmatched_tracks=False,
+        )
+
     def on_perceived_object_match(
         self, cpm, matched_track, deviation=None, perceived_object=None
     ):
@@ -395,7 +410,7 @@ class _PrvDetectorBase(CamCpmKalmanDetector):
 
 
 class PrvDetector(_PrvDetectorBase):
-    """Type 6 (PRV): EWMA trust over normalized one-second reciprocity evidence."""
+    """Type 6 (PRV): EWMA trust over aggregate one-second reciprocity evidence."""
 
     def track_id(self, track, create_trust=False):
         key = id(track)
@@ -411,42 +426,58 @@ class PrvDetector(_PrvDetectorBase):
         accepted_snapshot = {
             track_id: state.accepted for track_id, state in self.trust.items()
         }
-        raw_scores = {}
-        normalized_scores = {}
-        evidence_counts = {}
+        aggregate_scores = {track_id: None for track_id in self.trust}
+        evidence_counts = {track_id: 0 for track_id in self.trust}
+
+        # Reciprocity is a sparse directed graph. Build the small set of
+        # counterparts that actually has an edge in this interval instead of
+        # testing the Cartesian product of all trusted tracks. Sorting by trust
+        # insertion order preserves the former floating-point summation order.
+        trust_order = {
+            track_id: index for index, track_id in enumerate(self.trust)
+        }
+        counterparts_by_subject = {}
+        for source_id, target_id in self.bucket_edges:
+            if (
+                source_id == target_id
+                or source_id not in self.trust
+                or target_id not in self.trust
+            ):
+                continue
+            counterparts_by_subject.setdefault(source_id, set()).add(target_id)
+            counterparts_by_subject.setdefault(target_id, set()).add(source_id)
 
         for subject_id in self.trust:
             raw_score = 0.0
             evidence_count = 0
-            for counterpart_id, counterpart_accepted in accepted_snapshot.items():
-                if counterpart_id == subject_id or not counterpart_accepted:
+            counterparts = sorted(
+                counterparts_by_subject.get(subject_id, ()),
+                key=trust_order.__getitem__,
+            )
+            for counterpart_id in counterparts:
+                if not accepted_snapshot[counterpart_id]:
                     continue
-                inbound = self.bucket_edges.get((counterpart_id, subject_id))
-                outbound = self.bucket_edges.get((subject_id, counterpart_id))
-                if inbound is None and outbound is None:
+                # A is the assessed subject and B is this accepted counterpart.
+                # B→A is inbound evidence; A→B is outbound evidence.
+                b_to_a = self.bucket_edges.get((counterpart_id, subject_id))
+                a_to_b = self.bucket_edges.get((subject_id, counterpart_id))
+                if b_to_a is None and a_to_b is None:
                     continue
-                raw_score += self.pair_score(inbound, outbound)
+                raw_score += self.pair_score(b_to_a, a_to_b)
                 evidence_count += 1
 
-            raw_scores[subject_id] = raw_score
             evidence_counts[subject_id] = evidence_count
-            normalized_scores[subject_id] = (
-                raw_score / (MAX_PAIR_SCORE_MAGNITUDE * evidence_count)
-                if evidence_count else None
-            )
+            aggregate_scores[subject_id] = raw_score if evidence_count else None
 
         transitions = []
         trust_scores = {}
-        for track_id, normalized_score in normalized_scores.items():
+        for track_id, aggregate_score in aggregate_scores.items():
             state = self.trust[track_id]
             was_accepted = state.accepted
-            if normalized_score is not None:
-                state.score += TRUST_ALPHA * (normalized_score - state.score)
+            if aggregate_score is not None:
+                state.score += TRUST_ALPHA * (aggregate_score - state.score)
                 state.evidence_updates += 1
-                state.accepted = (
-                    state.evidence_updates < MIN_TRUST_UPDATES
-                    or state.score >= 0.0
-                )
+                state.accepted = state.score >= 0.0
             trust_scores[track_id] = state.score
             if state.accepted != was_accepted:
                 transitions.append({
@@ -456,8 +487,7 @@ class PrvDetector(_PrvDetectorBase):
 
         return {
             "bucket_id": self.current_bucket,
-            "scores": raw_scores,
-            "normalized_scores": normalized_scores,
+            "aggregate_scores": aggregate_scores,
             "evidence_counts": evidence_counts,
             "trust_scores": trust_scores,
             "trust_update_counts": {
@@ -473,5 +503,5 @@ class PrvDetector(_PrvDetectorBase):
     def decision_score(self, state):
         return state.score
 
-    def pair_score(self, inbound, outbound):
-        return prv_pair_score(inbound, outbound)
+    def pair_score(self, b_to_a, a_to_b):
+        return prv_pair_score(b_to_a, a_to_b)

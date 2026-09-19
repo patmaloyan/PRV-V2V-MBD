@@ -1,3 +1,5 @@
+"""Command-line entry point for the Kalman and CPM-assisted detectors."""
+
 import argparse
 import json
 from pathlib import Path
@@ -5,9 +7,7 @@ from pathlib import Path
 import pandas as pd
 
 from data_structures import Parameters
-from catch_profiles import load_catch_profile
 from cpm_detector import (
-    MIN_TRUST_UPDATES,
     PrvDetector,
     RECIPROCITY_NIS_THRESHOLD,
     TwoEdgeReciprocityDetector,
@@ -59,10 +59,9 @@ KALMAN_DETECTORS = {
     6: {
         "detector": PrvDetector,
         "result_name": "kalman_cam_cpm_prv",
-        "metric_keys": RECIPROCITY_METRICS + ("minimum_trust_updates",),
+        "metric_keys": RECIPROCITY_METRICS,
         "extra_metrics": {
             "reciprocity_nis_threshold": RECIPROCITY_NIS_THRESHOLD,
-            "minimum_trust_updates": MIN_TRUST_UPDATES,
         },
     },
 }
@@ -108,7 +107,7 @@ def evaluate_predictions(scenario_stats):
     return aggregated_metrics
 
 
-def add_catch_output(aggregated_metrics, metrics, profile, params):
+def add_catch_output(aggregated_metrics, metrics, params):
     aggregated_metrics["catch_enabled"] = metrics["catch_enabled"]
     aggregated_metrics["initial_covariance_diag"] = metrics["initial_covariance_diag"]
     aggregated_metrics["measurement_noise_diag"] = metrics["measurement_noise_diag"]
@@ -116,7 +115,6 @@ def add_catch_output(aggregated_metrics, metrics, profile, params):
         "cpm_association_noise_diag"
     ]
     aggregated_metrics["process_noise_model"] = metrics["process_noise_model"]
-    aggregated_metrics["catch_profile"] = profile if metrics["catch_enabled"] else None
     aggregated_metrics["catch_metrics"] = metrics["catch_metrics"]
     aggregated_metrics["catch_check_activations"] = metrics["catch_check_activations"]
     aggregated_metrics["kalman_skipped"] = metrics["kalman_skipped"]
@@ -133,9 +131,7 @@ def result_directory(input_folder: Path, detection_type: str):
     return output_dir
 
 
-def run_kalman_detector(
-    input_folder, detection_type, params, catch_enabled, catch_profile
-):
+def run_kalman_detector(input_folder, detection_type, params, catch_enabled):
     """Run one configured Kalman-family detector and prepare its CLI output."""
     config = KALMAN_DETECTORS[detection_type]
     detector = config["detector"]
@@ -152,7 +148,7 @@ def run_kalman_detector(
     aggregated_metrics = evaluate_predictions([metrics])
     for key in config["metric_keys"]:
         aggregated_metrics[key] = metrics.get(key)
-    add_catch_output(aggregated_metrics, metrics, catch_profile, params)
+    add_catch_output(aggregated_metrics, metrics, params)
     return config, aggregated_metrics, debug_results
 
 
@@ -171,7 +167,7 @@ def save_kalman_results(
                 orient="records"
             ),
             file,
-            indent=4,
+            separators=(",", ":"),
         )
     print(f"Saved in {output_file}")
     print(f"Saved debug in {debug_file}")
@@ -191,12 +187,15 @@ def load_parameters(args):
             name: values[option]
             for option, name in CATCH_PARAMETER_FIELDS.items()
         })
-    return load_catch_profile(args.catch_profile)
+    return Parameters()
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input_folder", help="Pfad zu den Eingabedateien", required=True)
+    parser.add_argument(
+        "--input_folder", help="Directory containing CAM, CPM, and ego data",
+        required=True,
+    )
     parser.add_argument(
         "--type",
         type=int,
@@ -206,11 +205,6 @@ def main():
             "4 = two-edge reciprocal CPM Kalman, 6 = PRV"
         ),
         required=True,
-    )
-    parser.add_argument(
-        "--catch-profile",
-        choices=["urban-low", "urban-high", "highway-low", "highway-high"],
-        default="urban-low",
     )
     parser.add_argument(
         "--no-pos-check",
@@ -236,7 +230,7 @@ def main():
 
     detection_type = int(args.type)
     config, aggregated_metrics, debug_results = run_kalman_detector(
-        input_folder, detection_type, params, catch_enabled, args.catch_profile
+        input_folder, detection_type, params, catch_enabled
     )
     print(aggregated_metrics["f1"])
     if args.train == 0:
